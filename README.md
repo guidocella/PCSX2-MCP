@@ -301,7 +301,7 @@ cd pcsx2-src
 cp ../pcsx2-plugin/DebugServer.cpp pcsx2/DebugTools/
 cp ../pcsx2-plugin/DebugServer.h pcsx2/DebugTools/
 
-# 3. Add to CMakeLists.txt (in pcsx2/DebugTools/)
+# 3. Add to pcsx2/CMakeLists.txt
 # Add DebugServer.cpp and DebugServer.h to the source list
 
 # 4. Build with CMake + Ninja + MSVC

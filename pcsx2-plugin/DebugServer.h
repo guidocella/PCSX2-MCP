@@ -1,40 +1,20 @@
 // SPDX-FileCopyrightText: 2026 PS2Recomp Debug Bridge
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0+
 //
-// PCSX2 Debug Server — JSON/TCP API wrapping DebugInterface
-// Drop this into pcsx2/DebugTools/ and add to CMakeLists.txt
-//
-// Features:
-//   - Full 128-bit register R/W (all 7 categories: GPR, CP0, FPR, FCR, VU0F, VU0I, GSPRIV)
-//   - Native PCSX2 disassembly
-//   - Expression evaluation with symbol lookup
-//   - Conditional breakpoints with expression conditions
-//   - Memory watchpoints (read/write/onChange)
-//   - Thread list, module list
-//   - Pause/Resume/Step execution control
-//   - Memory R/W (8/16/32/64/128 bit)
-//   - Stack walk
+// PCSX2 Debug Server — a JSON/TCP debugging API on top of DebugInterface and
+// CBreakPoints, used by pcsx2-mcp-server. See DebugServer.cpp for the protocol.
 
 #pragma once
 
-#include <string>
-#include <thread>
-#include <atomic>
-#include <functional>
-
 namespace DebugServer
 {
-	// Start the debug server on the given TCP port
-	// Call this once from PCSX2 initialization (e.g. in VMManager::Initialize)
+	// Start the debug server on 127.0.0.1:port (the PCSX2_DEBUG_SERVER_PORT
+	// environment variable overrides the port). Call from the CPU thread
+	// during initialization, e.g. VMManager::Internal::CPUThreadInitialize().
 	void Start(int port = 21512);
 
-	// Stop the server and close all connections
+	// Stop accepting connections and disconnect clients.
 	void Stop();
 
-	// Check if server is running
 	bool IsRunning();
-
-	// Called when a breakpoint is hit — wakes up any waiting step/continue
-	void OnBreakpointHit();
-
 } // namespace DebugServer

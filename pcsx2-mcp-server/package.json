@@ -1,7 +1,7 @@
 {
   "name": "pcsx2-mcp-server",
-  "version": "2.0.0",
-  "description": "ULTIMATE PCSX2 Debugger MCP Server — custom C++ DebugServer plugin + Pine IPC",
+  "version": "3.0.0",
+  "description": "MCP server for debugging PS2 games in PCSX2 (via a DebugServer patch)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -19,5 +19,11 @@
   "devDependencies": {
     "@types/node": "^22.15.17",
     "typescript": "^5.8.3"
-  }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist"
+  ]
 }

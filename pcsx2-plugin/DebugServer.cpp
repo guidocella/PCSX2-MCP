@@ -1495,7 +1495,7 @@ namespace DebugServer
 		for (const auto& thread : cpu->GetThreadList())
 		{
 			if (thread->Status() == ThreadStatus::THS_RUN)
-				return cpu->StackTrace(*thread);
+				return cpu->StackTrace(thread.get());
 		}
 		return MipsStackWalk::Walk(cpu, cpu->getPC(), cpu->getRegister(EECAT_GPR, 31)._u32[0],
 			cpu->getRegister(EECAT_GPR, 29)._u32[0], 0);
@@ -1773,7 +1773,7 @@ namespace DebugServer
 			{
 				if (t->TID() == tid)
 				{
-					frames = c.cpu->StackTrace(*t);
+					frames = c.cpu->StackTrace(t.get());
 					found = true;
 					break;
 				}

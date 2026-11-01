@@ -741,6 +741,15 @@ tool('pcsx2_load_state', 'Load a savestate from a slot (1-10) or a file path.',
   },
 );
 
+tool('pcsx2_reload_cheats', 'Reload cheat and patch pnach files from disk, like Tools > Reload Cheats/Patches. Only continuous (place 1 or 2) lines take effect right away; once-on-boot lines wait for the next boot.',
+  {},
+  async () => {
+    const r = await dbg.call<{ cheats_enabled: boolean; cheats: number; patches: number; gamedb_patches: number }>('reload_cheats');
+    const summary = `Reloaded: ${r.cheats} cheats, ${r.patches} patches, ${r.gamedb_patches} GameDB patches active.`;
+    return r.cheats_enabled ? summary : `${summary} Cheats are disabled in the game's settings.`;
+  },
+);
+
 // ==========================================================
 //  PS2Recomp integration (only when PS2RECOMP_ROOT is set)
 // ==========================================================

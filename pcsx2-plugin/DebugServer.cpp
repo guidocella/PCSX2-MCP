@@ -54,6 +54,7 @@ typedef int socket_t;
 #include "Counters.h"
 #include "Host.h"
 #include "MTGS.h"
+#include "Patch.h"
 #include "VMManager.h"
 #include "SIO/Pad/Pad.h"
 #include "SIO/Pad/PadDualshock2.h"
@@ -2018,6 +2019,27 @@ namespace DebugServer
 		return true;
 	}
 
+	static bool cmdReloadCheats(Context& c)
+	{
+		if (!requireVM(c))
+			return false;
+
+		u32 cheats = 0;
+		u32 patches = 0;
+		u32 gamedb_patches = 0;
+		runOnCpuThread([&] {
+			VMManager::ReloadPatches(true, false, true, true);
+			cheats = Patch::GetActiveCheatsCount();
+			patches = Patch::GetActivePatchesCount();
+			gamedb_patches = Patch::GetActiveGameDBPatchesCount();
+		});
+		c.out.key("cheats_enabled").boolean(EmuConfig.EnableCheats);
+		c.out.key("cheats").num(cheats);
+		c.out.key("patches").num(patches);
+		c.out.key("gamedb_patches").num(gamedb_patches);
+		return true;
+	}
+
 	struct Command
 	{
 		const char* name;
@@ -2065,6 +2087,7 @@ namespace DebugServer
 		{"screenshot", cmdScreenshot, false},
 		{"save_state", cmdSaveState, true},
 		{"load_state", cmdLoadState, true},
+		{"reload_cheats", cmdReloadCheats, true},
 	};
 
 	static std::mutex s_exclusiveMutex;

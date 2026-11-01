@@ -45,6 +45,7 @@ Most tools take `cpu: "ee" | "iop"` (default EE).
 | System | `pcsx2_get_threads`, `pcsx2_get_modules` (IOP IRX modules), `pcsx2_get_backtrace` (any thread) |
 | Input | `pcsx2_input` — press (for N frames), hold or release DualShock 2 buttons and sticks; deterministic while paused |
 | Media | `pcsx2_screenshot` (returns a PNG image, works while paused), `pcsx2_save_state` / `pcsx2_load_state` (slot 1–10 or a file path) |
+| Cheats | `pcsx2_reload_cheats` — reload pnach cheats and patches from disk; continuous lines take effect immediately |
 | PS2Recomp | `ps2recomp_lookup_function`, `ps2recomp_list_overrides` — only when `PS2RECOMP_ROOT` is set |
 
 When the VM stops, tools report **why**: which breakpoint or watchpoint fired (tracked via hit counters, so this works
@@ -157,6 +158,7 @@ connection are answered in order. Address-like fields take a number or an expres
 | `pad_set`, `pad_release` | `inputs` (release: empty = everything), `port` |
 | `screenshot` | `width`, `height` (0 = internal resolution) → `png_base64` |
 | `save_state`, `load_state` | `slot` (1–10) or `path` |
+| `reload_cheats` | → `cheats_enabled`, `cheats`, `patches`, `gamedb_patches` |
 
 `stop` describes why and where execution stopped: `reason`, the breakpoints/watchpoints that fired (`hits`), and the
 `ee`/`iop` locations.

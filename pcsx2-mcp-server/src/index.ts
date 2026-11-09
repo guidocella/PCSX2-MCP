@@ -70,6 +70,9 @@ function tool<S extends z.ZodRawShape>(
 // arrives anyway is read as hex digits like a bare number in an expression ("139424" = 0x139424).
 const addr = () => z.preprocess(v => (typeof v === 'number' ? v.toString() : v), z.string())
   .describe('Address expression string, hex by default: "1000e0", "0x1000e0", "a0+10", "main"');
+const logFormatArg = () => z.string().optional().describe(
+  'For log/both: message with {expression}s, printed in hex unless they end in ":f" (float), ":d" (signed) or ":u" '
+  + '(unsigned), e.g. "a0={a0} [a1]={[a1]} f12={f12:f}"');
 const cpuArg = () => z.enum(['ee', 'iop']).default('ee').describe('Target CPU');
 const hex32 = (n: number) => '0x' + (n >>> 0).toString(16).padStart(8, '0');
 
@@ -426,7 +429,7 @@ tool('pcsx2_evaluate', 'Evaluate a PCSX2 debugger expression: registers, symbols
 tool('pcsx2_assemble',
   'Assemble MIPS instructions with PCSX2\'s assembler, for code caves and patches. Immediates and jump/branch targets are '
   + 'expressions (hex by default), and are encoded for the given address. Shows the disassembly of each encoding as a check, '
-  + 'and pnach lines. With write=true the code is also written to memory.',
+  + 'and pnach lines. With write=true the code is also written to memory. "li reg,imm" is expanded to addiu, ori or lui+ori.',
   {
     address: addr().describe('Address of the first instruction'),
     code: z.string().describe('One instruction per line or separated by ";", e.g. "lui v0,0x3f00; j 0x1681ac; nop". "//" starts a comment.'),
@@ -491,7 +494,7 @@ tool('pcsx2_set_breakpoint', 'Set (or replace) an execution breakpoint, optional
     address: addr(),
     condition: z.string().optional().describe('Only break when this expression is non-zero, e.g. "a0 == 3" (hex numbers)'),
     action: actionArg(),
-    log_format: z.string().optional().describe('For log/both, e.g. "a0={a0} [a1]={[a1]}"'),
+    log_format: logFormatArg(),
     backtrace: z.number().int().min(0).max(32).default(0).describe('For log/both: also record this many callers (return addresses) per hit'),
     max_hits: z.number().int().min(0).default(0).describe('Disable after this many hits (0 = never)'),
     description: z.string().optional(),
@@ -529,14 +532,15 @@ tool('pcsx2_set_watchpoint', 'Set a memory watchpoint (breaks on read/write/acce
     type: z.enum(['read', 'write', 'readwrite', 'onchange']).default('write'),
     condition: z.string().optional(),
     action: actionArg(),
-    log_format: z.string().optional(),
+    log_format: logFormatArg(),
+    backtrace: z.number().int().min(0).max(32).default(0).describe('For log/both: also record this many callers of the accessing function per hit'),
     max_hits: z.number().int().min(0).default(0),
     description: z.string().optional(),
     cpu: cpuArg(),
   },
-  async ({ address, size, end, type, condition, action, log_format, max_hits, description, cpu }) => {
+  async ({ address, size, end, type, condition, action, log_format, backtrace, max_hits, description, cpu }) => {
     const r = await dbg.call<{ start: string; end: string }>('set_memcheck',
-      { address, size, end, type, condition, action, log_format, max_hits, description, cpu });
+      { address, size, end, type, condition, action, log_format, backtrace, max_hits, description, cpu });
     return `Watchpoint (${type}${action !== 'break' ? `, ${action}` : ''}) on ${r.start}-${r.end}${condition ? ` if ${condition}` : ''}`;
   },
 );
@@ -584,7 +588,7 @@ const logWhere = (l: LogLocation) =>
 
 tool('pcsx2_get_log',
   'Read the hits recorded by breakpoints and watchpoints with action log/both: the log_format message, and the callers '
-  + 'if the breakpoint has "backtrace". summarize groups identical hits with counts, e.g. to see which callers run a function '
+  + 'if the breakpoint or watchpoint has "backtrace". summarize groups identical hits with counts, e.g. to see which callers run a function '
   + 'and how often: set a log breakpoint with backtrace, let the game run, then summarize.',
   {
     summarize: z.boolean().default(true).describe('Group identical hits (same PC, message and callers), most frequent first'),

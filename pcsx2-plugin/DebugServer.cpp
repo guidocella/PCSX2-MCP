@@ -63,6 +63,7 @@ typedef int socket_t;
 
 #include "common/Error.h"
 #include "common/Image.h"
+#include "common/StringUtil.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1113,6 +1114,69 @@ namespace DebugServer
 	// starting at "address", and writes the result there if "write" is set.
 	// Immediates are expressions like elsewhere, so "j 1cd108" jumps to
 	// 0x1cd108 and "lui v0,0x3f80" is explicit hex.
+	// Expands "li reg, imm" into addiu, ori or lui+ori; imm is an expression
+	// like the assembler's immediates (hex by default). Any other line is
+	// passed through unchanged.
+	static bool expandPseudoInstruction(DebugInterface* cpu, const std::string& line, std::vector<std::string>& out, std::string& error)
+	{
+		const size_t space = line.find_first_of(" \t");
+		if (space == std::string::npos || StringUtil::toLower(line.substr(0, space)) != "li")
+		{
+			out.push_back(line);
+			return true;
+		}
+		const std::string args = line.substr(space + 1);
+		const size_t comma = args.find(',');
+		if (comma == std::string::npos)
+		{
+			error = "expected 'li reg, imm'";
+			return false;
+		}
+		std::string reg = args.substr(0, comma);
+		std::string imm = args.substr(comma + 1);
+		auto trim = [](std::string& s) {
+			s.erase(0, s.find_first_not_of(" \t"));
+			s.erase(s.find_last_not_of(" \t") + 1);
+		};
+		trim(reg);
+		trim(imm);
+		u64 value;
+		if (imm.empty() || !cpu->evaluateExpression(imm.c_str(), value, error))
+		{
+			if (error.empty())
+				error = "invalid immediate '" + imm + "'";
+			return false;
+		}
+		if (value > 0xffffffffull && static_cast<s64>(value) < INT32_MIN)
+		{
+			error = "'" + imm + "' does not fit in 32 bits";
+			return false;
+		}
+		const u32 v = static_cast<u32>(value);
+		char buf[64];
+		if (static_cast<s32>(v) >= -0x8000 && static_cast<s32>(v) < 0x8000)
+		{
+			std::snprintf(buf, sizeof(buf), "addiu %s,zero,%d", reg.c_str(), static_cast<s32>(v));
+			out.push_back(buf);
+		}
+		else if (v <= 0xffff)
+		{
+			std::snprintf(buf, sizeof(buf), "ori %s,zero,0x%x", reg.c_str(), v);
+			out.push_back(buf);
+		}
+		else
+		{
+			std::snprintf(buf, sizeof(buf), "lui %s,0x%x", reg.c_str(), v >> 16);
+			out.push_back(buf);
+			if (v & 0xffff)
+			{
+				std::snprintf(buf, sizeof(buf), "ori %s,%s,0x%x", reg.c_str(), reg.c_str(), v & 0xffff);
+				out.push_back(buf);
+			}
+		}
+		return true;
+	}
+
 	static bool cmdAssemble(Context& c)
 	{
 		if (!requireVM(c))
@@ -1142,13 +1206,24 @@ namespace DebugServer
 		if (lines.empty())
 			return c.fail("'code' has no instructions");
 
-		std::vector<u32> words;
+		// PCSX2's assembler has no "li", so expand it into one or two real
+		// instructions; each keeps the original line as its source.
+		std::vector<std::string> instructions, sources;
 		for (size_t i = 0; i < lines.size(); i++)
+		{
+			std::string error;
+			if (!expandPseudoInstruction(c.cpu, lines[i], instructions, error))
+				return c.fail("cannot assemble line " + std::to_string(i + 1) + " ('" + lines[i] + "'): " + error);
+			sources.resize(instructions.size(), lines[i]);
+		}
+
+		std::vector<u32> words;
+		for (size_t i = 0; i < instructions.size(); i++)
 		{
 			u32 word;
 			std::string error;
-			if (!MipsAssembleOpcode(lines[i].c_str(), c.cpu, addr + static_cast<u32>(i * 4), word, error))
-				return c.fail("cannot assemble line " + std::to_string(i + 1) + " ('" + lines[i] + "'): " + error);
+			if (!MipsAssembleOpcode(instructions[i].c_str(), c.cpu, addr + static_cast<u32>(i * 4), word, error))
+				return c.fail("cannot assemble '" + sources[i] + "'" + (instructions[i] != sources[i] ? " ('" + instructions[i] + "')" : "") + ": " + error);
 			words.push_back(word);
 		}
 
@@ -1171,7 +1246,7 @@ namespace DebugServer
 			c.out.beginObject();
 			c.out.key("address").hex32(pc);
 			c.out.key("opcode").hex32(words[i]);
-			c.out.key("source").str(lines[i]);
+			c.out.key("source").str(sources[i]);
 			// Disassemble the encoding as a check, e.g. of jump targets.
 			if (c.bpCpu == BREAKPOINT_EE)
 			{
@@ -1236,8 +1311,8 @@ namespace DebugServer
 	// ============================================================
 	// Instrumentation log: breakpoints and watchpoints with action "log" or
 	// "both" report each hit to OnInstrumentationLog() (on the CPU thread),
-	// which buffers it for get_log. Log breakpoints can also record a
-	// backtrace of the callers at each hit.
+	// which buffers it for get_log. Log breakpoints and watchpoints can also
+	// record a backtrace of the callers at each hit.
 	// ============================================================
 	struct LogEntry
 	{
@@ -1251,34 +1326,36 @@ namespace DebugServer
 	static std::mutex s_logMutex;
 	static std::deque<LogEntry> s_log;
 	static u64 s_logDropped = 0;
-	// Number of callers to record, per log breakpoint.
-	static std::map<std::pair<BreakPointCpu, u32>, int> s_logBacktrace;
+	// Number of callers to record, per log breakpoint or watchpoint (by its
+	// address or start address).
+	static std::map<std::tuple<BreakPointCpu, bool, u32>, int> s_logBacktrace;
 
-	static void setLogBacktrace(BreakPointCpu cpu, u32 addr, int frames)
+	static void setLogBacktrace(BreakPointCpu cpu, u32 addr, int frames, bool watchpoint = false)
 	{
 		std::lock_guard lock(s_logMutex);
 		if (frames > 0)
-			s_logBacktrace[{cpu, addr}] = frames;
+			s_logBacktrace[{cpu, watchpoint, addr}] = frames;
 		else
-			s_logBacktrace.erase({cpu, addr});
+			s_logBacktrace.erase({cpu, watchpoint, addr});
 	}
 
 	static std::vector<MipsStackWalk::StackFrame> currentStack(DebugInterface* cpu);
 
-	static void recordLog(bool iop, std::string_view message)
+	static void recordLog(bool iop, std::string_view message, u32 address, bool watchpoint)
 	{
 		DebugInterface* cpu = iop ? static_cast<DebugInterface*>(&r3000Debug) : &r5900Debug;
 		LogEntry e{iop, cpu->getPC(), std::string(message), {}};
 		int frames = 0;
 		{
 			std::lock_guard lock(s_logMutex);
-			const auto it = s_logBacktrace.find({iop ? BREAKPOINT_IOP : BREAKPOINT_EE, e.pc});
+			const auto it = s_logBacktrace.find({iop ? BREAKPOINT_IOP : BREAKPOINT_EE, watchpoint, address});
 			if (it != s_logBacktrace.end())
 				frames = it->second;
 		}
 		if (frames > 0)
 		{
-			// Frame 0 is the breakpoint itself; the rest are return addresses.
+			// Frame 0 is the breakpoint or the accessing instruction; the rest
+			// are return addresses.
 			const auto stack = currentStack(cpu);
 			for (size_t i = 1; i < stack.size() && static_cast<int>(e.callers.size()) < frames; i++)
 			{
@@ -1575,7 +1652,9 @@ namespace DebugServer
 			return false;
 		const std::string desc = c.req.str("description");
 		const u32 maxHits = static_cast<u32>(c.req.integer("max_hits", 0));
+		const int backtrace = static_cast<int>(std::clamp<int64_t>(c.req.integer("backtrace", 0), 0, 32));
 		const BreakPointCpu cpu = c.bpCpu;
+		setLogBacktrace(cpu, start, log ? backtrace : 0, true);
 
 		runOnCpuThread([=] {
 			CBreakPoints::RemoveMemCheck(cpu, start, end);
@@ -1618,6 +1697,7 @@ namespace DebugServer
 		if (!findMemcheck(c, start, end))
 			return false;
 		const BreakPointCpu cpu = c.bpCpu;
+		setLogBacktrace(cpu, start, 0, true);
 		runOnCpuThread([cpu, start, end] { CBreakPoints::RemoveMemCheck(cpu, start, end); });
 		c.out.key("start").hex32(start);
 		c.out.key("end").hex32(end);
@@ -2513,9 +2593,9 @@ namespace DebugServer
 
 	static std::thread s_serverThread;
 
-	void OnInstrumentationLog(bool iop, std::string_view message)
+	void OnInstrumentationLog(bool iop, std::string_view message, unsigned int address, bool watchpoint)
 	{
-		recordLog(iop, message);
+		recordLog(iop, message, address, watchpoint);
 	}
 
 	void Start(int port)

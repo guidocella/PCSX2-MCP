@@ -21,6 +21,7 @@ namespace DebugServer
 	bool IsRunning();
 
 	// Records a hit of a breakpoint or watchpoint with logging enabled, for
-	// the get_log command. Call from LogInstrumentation() in Breakpoints.cpp.
-	void OnInstrumentationLog(bool iop, std::string_view message);
+	// the get_log command. Call from LogInstrumentation() in Breakpoints.cpp;
+	// address is the breakpoint's, or the start of the watchpoint's range.
+	void OnInstrumentationLog(bool iop, std::string_view message, unsigned int address, bool watchpoint);
 } // namespace DebugServer

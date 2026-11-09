@@ -28,8 +28,9 @@ The full PCSX2 source is not included; see [Building](#building).
 
 ## Tools
 
-Addresses accept numbers or **PCSX2 debugger expressions**: bare numbers are hex (`1000e0`), and registers, symbols,
-arithmetic and dereferences work (`a0+10`, `sp`, `main`, `[gp-7ff0]`).
+Addresses are **PCSX2 debugger expression** strings: bare numbers are hex (`1000e0`), and registers, symbols,
+arithmetic and dereferences work (`a0+10`, `sp`, `main`, `[gp-7ff0]`). A JSON number is read as hex digits too, since
+JSON can't write hex.
 Most tools take `cpu: "ee" | "iop"` (default EE).
 
 | Area | Tools |
@@ -38,8 +39,8 @@ Most tools take `cpu: "ee" | "iop"` (default EE).
 | Memory | `pcsx2_read_memory` (hexdump or typed u8…f64), `pcsx2_write_memory` (hex bytes or a typed value), `pcsx2_read_string` (ASCII/UTF-8/Shift-JIS), `pcsx2_find_pattern` (bytes with `??` wildcards, or a typed value) |
 | Value hunting | `pcsx2_memory_snapshot` + `pcsx2_memory_diff` — cheat-search style narrowing with changed/unchanged/increased/decreased/equals filters |
 | Registers | `pcsx2_read_registers` (GPR, CP0, FPR, FCR, VU0F, VU0I, GSPRIV or all), `pcsx2_write_register` (by name), `pcsx2_set_pc` |
-| Code | `pcsx2_disassemble` (marks PC, breakpoints and function labels), `pcsx2_evaluate`, `pcsx2_lookup_symbol`, `pcsx2_list_functions`, `pcsx2_analyze` |
-| Breakpoints | `pcsx2_set_breakpoint` (conditions, log-only tracing, max hits), `pcsx2_remove_breakpoint`, `pcsx2_enable_breakpoint`, `pcsx2_list_breakpoints`, `pcsx2_clear_breakpoints` |
+| Code | `pcsx2_disassemble` (marks PC, breakpoints and function labels), `pcsx2_assemble` (PCSX2's assembler; prints pnach lines, optionally writes), `pcsx2_evaluate`, `pcsx2_lookup_symbol`, `pcsx2_list_functions`, `pcsx2_analyze` |
+| Breakpoints | `pcsx2_set_breakpoint` (conditions, log-only tracing with optional caller backtraces, max hits), `pcsx2_get_log` (logged hits, or grouped with counts), `pcsx2_remove_breakpoint`, `pcsx2_enable_breakpoint`, `pcsx2_list_breakpoints`, `pcsx2_clear_breakpoints` |
 | Watchpoints | `pcsx2_set_watchpoint` (read/write/readwrite/onchange, conditions), `pcsx2_remove_watchpoint`, `pcsx2_enable_watchpoint` |
 | Execution | `pcsx2_pause`, `pcsx2_continue` (optionally waiting for a breakpoint), `pcsx2_wait`, `pcsx2_step` (into/over/out, branch-aware), `pcsx2_run_to`, `pcsx2_frame_advance` |
 | System | `pcsx2_get_threads`, `pcsx2_get_modules` (IOP IRX modules), `pcsx2_get_backtrace` (any thread) |
@@ -65,6 +66,10 @@ for functions according to *Settings → Debug → Analysis*, so disassembly and
 
 ```
 > Take a screenshot, press Start, then press Cross for 10 frames and screenshot again
+```
+
+```
+> Log a 2-frame backtrace at 139340 without pausing, run for a second, and summarize the log
 ```
 
 ```
@@ -118,7 +123,14 @@ Patch PCSX2 with the DebugServer:
 3. In `pcsx2/VMManager.cpp`, `#include "DebugTools/DebugServer.h"`, call `DebugServer::Start();` in
    `VMManager::Internal::CPUThreadInitialize()` (after `ReloadPINE()`), and `DebugServer::Stop();` in
    `VMManager::Internal::CPUThreadShutdown()`.
-4. Build PCSX2 as usual (see PCSX2's build documentation for your platform).
+4. In `pcsx2/DebugTools/Breakpoints.cpp`, `#include "DebugServer.h"` and make `LogInstrumentation()` pass the message
+   to the DebugServer, so `get_log` sees logged hits:
+   ```cpp
+   const std::string message = EvaluateInstrumentationLogFormat(debug, logFormat);
+   Console.WriteLn(color, "%s", message.c_str());
+   DebugServer::OnInstrumentationLog(cpu == BREAKPOINT_IOP, message);
+   ```
+5. Build PCSX2 as usual (see PCSX2's build documentation for your platform).
 
 On startup PCSX2 logs `[DebugServer] Listening on 127.0.0.1:21512`. Set `PCSX2_DEBUG_SERVER_PORT` to use another port
 (and `PCSX2_DEBUG_PORT` for the MCP server to match). The server only listens on localhost.
@@ -142,13 +154,15 @@ connection are answered in order. Address-like fields take a number or an expres
 | `read_string` | `address`, `max_length` → `hex`, `terminated` |
 | `find_memory` | `pattern` (hex, `??` wildcards), `start`, `end`, `align`, `max_results` |
 | `disassemble` | `address` (default PC), `count`, `before`, `simplify` |
+| `assemble` | `address`, `code` (instructions separated by newlines or `;`), `write` → `instructions` (`opcode`, `disasm`) |
 | `evaluate` | `expression` |
 | `analyze`, `lookup_symbol`, `list_functions` | `name` / `address`; `filter`, `start`, `end`, `limit` |
-| `set_breakpoint` | `address`, `condition`, `action` (`break`/`log`/`both`), `log_format`, `max_hits`, `description`, `enabled`, `temporary` |
+| `set_breakpoint` | `address`, `condition`, `action` (`break`/`log`/`both`), `log_format`, `backtrace` (callers to log per hit), `max_hits`, `description`, `enabled`, `temporary` |
 | `remove_breakpoint`, `enable_breakpoint` | `address`, `enabled` |
 | `set_memcheck` | `address`, `size` or `end`, `type` (`read`/`write`/`readwrite`/`onchange`), plus the breakpoint options |
 | `remove_memcheck`, `enable_memcheck` | `address` (and optionally `size`/`end`), `enabled` |
 | `list_breakpoints`, `clear_breakpoints` | |
+| `get_log` | `summarize`, `clear`, `max` → `total`, `dropped`, `entries` or `groups` (with `count`), `distinct`; the buffer keeps the last 100000 hits |
 | `pause`, `resume` | |
 | `wait` | `timeout_ms` → `timed_out`, `stop` |
 | `step`, `step_over`, `step_out`, `run_to` | `address` (run_to), `timeout_ms` → `stop` |

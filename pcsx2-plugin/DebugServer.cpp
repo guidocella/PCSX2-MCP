@@ -46,7 +46,9 @@ typedef int socket_t;
 #include "DebugServer.h"
 #include "DebugInterface.h"
 #include "Breakpoints.h"
+#include "Debug.h"
 #include "MIPSAnalyst.h"
+#include "MipsAssembler.h"
 #include "MipsStackWalk.h"
 #include "SymbolImporter.h"
 
@@ -69,8 +71,10 @@ typedef int socket_t;
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -1105,6 +1109,83 @@ namespace DebugServer
 		return true;
 	}
 
+	// Assembles one instruction per line (or per ';') with PCSX2's assembler,
+	// starting at "address", and writes the result there if "write" is set.
+	// Immediates are expressions like elsewhere, so "j 1cd108" jumps to
+	// 0x1cd108 and "lui v0,0x3f80" is explicit hex.
+	static bool cmdAssemble(Context& c)
+	{
+		if (!requireVM(c))
+			return false;
+		u32 addr;
+		if (!getAddress(c, "address", addr))
+			return false;
+		const bool write = c.req.boolean("write", false);
+
+		std::vector<std::string> lines;
+		std::string line;
+		const std::string code = c.req.str("code") + "\n";
+		for (const char ch : code)
+		{
+			if (ch != '\n' && ch != ';')
+			{
+				line += ch;
+				continue;
+			}
+			if (const size_t comment = line.find("//"); comment != std::string::npos)
+				line.erase(comment);
+			const size_t first = line.find_first_not_of(" \t\r");
+			if (first != std::string::npos)
+				lines.push_back(line.substr(first, line.find_last_not_of(" \t\r") - first + 1));
+			line.clear();
+		}
+		if (lines.empty())
+			return c.fail("'code' has no instructions");
+
+		std::vector<u32> words;
+		for (size_t i = 0; i < lines.size(); i++)
+		{
+			u32 word;
+			std::string error;
+			if (!MipsAssembleOpcode(lines[i].c_str(), c.cpu, addr + static_cast<u32>(i * 4), word, error))
+				return c.fail("cannot assemble line " + std::to_string(i + 1) + " ('" + lines[i] + "'): " + error);
+			words.push_back(word);
+		}
+
+		if (write)
+		{
+			DebugInterface* cpu = c.cpu;
+			bool ok = true;
+			runOnCpuThread([cpu, addr, &words, &ok] {
+				for (size_t i = 0; i < words.size(); i++)
+					ok &= cpu->Write32(addr + static_cast<u32>(i * 4), words[i]);
+			});
+			if (!ok)
+				return c.fail("the address range is not writable");
+		}
+
+		c.out.key("instructions").beginArray();
+		for (size_t i = 0; i < words.size(); i++)
+		{
+			const u32 pc = addr + static_cast<u32>(i * 4);
+			c.out.beginObject();
+			c.out.key("address").hex32(pc);
+			c.out.key("opcode").hex32(words[i]);
+			c.out.key("source").str(lines[i]);
+			// Disassemble the encoding as a check, e.g. of jump targets.
+			if (c.bpCpu == BREAKPOINT_EE)
+			{
+				std::string disasm;
+				R5900::disR5900Fasm(disasm, words[i], pc, false);
+				c.out.key("disasm").str(disasm);
+			}
+			c.out.endObject();
+		}
+		c.out.endArray();
+		c.out.key("written").boolean(write);
+		return true;
+	}
+
 	static bool cmdEvaluate(Context& c)
 	{
 		if (!requireVM(c))
@@ -1152,6 +1233,156 @@ namespace DebugServer
 		return true;
 	}
 
+	// ============================================================
+	// Instrumentation log: breakpoints and watchpoints with action "log" or
+	// "both" report each hit to OnInstrumentationLog() (on the CPU thread),
+	// which buffers it for get_log. Log breakpoints can also record a
+	// backtrace of the callers at each hit.
+	// ============================================================
+	struct LogEntry
+	{
+		bool iop;
+		u32 pc;
+		std::string message;
+		std::vector<u32> callers;
+	};
+
+	static constexpr size_t MAX_LOG_ENTRIES = 100000;
+	static std::mutex s_logMutex;
+	static std::deque<LogEntry> s_log;
+	static u64 s_logDropped = 0;
+	// Number of callers to record, per log breakpoint.
+	static std::map<std::pair<BreakPointCpu, u32>, int> s_logBacktrace;
+
+	static void setLogBacktrace(BreakPointCpu cpu, u32 addr, int frames)
+	{
+		std::lock_guard lock(s_logMutex);
+		if (frames > 0)
+			s_logBacktrace[{cpu, addr}] = frames;
+		else
+			s_logBacktrace.erase({cpu, addr});
+	}
+
+	static std::vector<MipsStackWalk::StackFrame> currentStack(DebugInterface* cpu);
+
+	static void recordLog(bool iop, std::string_view message)
+	{
+		DebugInterface* cpu = iop ? static_cast<DebugInterface*>(&r3000Debug) : &r5900Debug;
+		LogEntry e{iop, cpu->getPC(), std::string(message), {}};
+		int frames = 0;
+		{
+			std::lock_guard lock(s_logMutex);
+			const auto it = s_logBacktrace.find({iop ? BREAKPOINT_IOP : BREAKPOINT_EE, e.pc});
+			if (it != s_logBacktrace.end())
+				frames = it->second;
+		}
+		if (frames > 0)
+		{
+			// Frame 0 is the breakpoint itself; the rest are return addresses.
+			const auto stack = currentStack(cpu);
+			for (size_t i = 1; i < stack.size() && static_cast<int>(e.callers.size()) < frames; i++)
+			{
+				if (!cpu->isValidAddress(stack[i].pc))
+					break;
+				e.callers.push_back(stack[i].pc);
+			}
+		}
+		std::lock_guard lock(s_logMutex);
+		s_log.push_back(std::move(e));
+		if (s_log.size() > MAX_LOG_ENTRIES)
+		{
+			s_log.pop_front();
+			s_logDropped++;
+		}
+	}
+
+	static void writeLogLocation(JsonWriter& j, DebugInterface* cpu, u32 pc)
+	{
+		j.beginObject();
+		j.key("pc").hex32(pc);
+		u32 offset = 0;
+		const std::string fn = functionNameAt(cpu, pc, true, &offset);
+		if (!fn.empty())
+		{
+			j.key("function").str(fn);
+			j.key("function_offset").unum(offset);
+		}
+		j.endObject();
+	}
+
+	// Returns the buffered log hits, oldest first, or with "summarize" the
+	// distinct (cpu, pc, message, callers) combinations with their counts,
+	// most frequent first. "clear" empties the buffer afterwards.
+	static bool cmdGetLog(Context& c)
+	{
+		const size_t max = static_cast<size_t>(std::clamp<int64_t>(c.req.integer("max", 1000), 0, MAX_LOG_ENTRIES));
+		const bool summarize = c.req.boolean("summarize", false);
+		const bool clear = c.req.boolean("clear", false);
+
+		std::deque<LogEntry> entries;
+		u64 dropped;
+		{
+			std::lock_guard lock(s_logMutex);
+			dropped = s_logDropped;
+			if (clear)
+			{
+				entries.swap(s_log);
+				s_logDropped = 0;
+			}
+			else
+			{
+				entries = s_log;
+			}
+		}
+
+		std::vector<std::pair<const LogEntry*, u64>> groups;
+		if (summarize)
+		{
+			std::map<std::tuple<bool, u32, std::string_view, std::vector<u32>>, size_t> index;
+			for (const LogEntry& e : entries)
+			{
+				const auto [it, inserted] = index.try_emplace({e.iop, e.pc, e.message, e.callers}, groups.size());
+				if (inserted)
+					groups.push_back({&e, 0});
+				groups[it->second].second++;
+			}
+			std::stable_sort(groups.begin(), groups.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+		}
+		else
+		{
+			for (const LogEntry& e : entries)
+				groups.push_back({&e, 1});
+		}
+
+		c.out.key("total").unum(entries.size());
+		c.out.key("dropped").unum(dropped);
+		if (summarize)
+			c.out.key("distinct").unum(groups.size());
+		c.out.key(summarize ? "groups" : "entries").beginArray();
+		for (size_t i = 0; i < groups.size() && i < max; i++)
+		{
+			const LogEntry& e = *groups[i].first;
+			DebugInterface* cpu = e.iop ? static_cast<DebugInterface*>(&r3000Debug) : &r5900Debug;
+			c.out.beginObject();
+			if (summarize)
+				c.out.key("count").unum(groups[i].second);
+			c.out.key("cpu").str(e.iop ? "iop" : "ee");
+			c.out.key("location");
+			writeLogLocation(c.out, cpu, e.pc);
+			c.out.key("message").str(e.message);
+			if (!e.callers.empty())
+			{
+				c.out.key("callers").beginArray();
+				for (const u32 pc : e.callers)
+					writeLogLocation(c.out, cpu, pc);
+				c.out.endArray();
+			}
+			c.out.endObject();
+		}
+		c.out.endArray();
+		return true;
+	}
+
 	static bool cmdSetBreakpoint(Context& c)
 	{
 		if (!requireVM(c))
@@ -1168,7 +1399,9 @@ namespace DebugServer
 		const bool temporary = c.req.boolean("temporary", false);
 		const std::string desc = c.req.str("description");
 		const u32 maxHits = static_cast<u32>(c.req.integer("max_hits", 0));
+		const int backtrace = static_cast<int>(std::clamp<int64_t>(c.req.integer("backtrace", 0), 0, 32));
 		const BreakPointCpu cpu = c.bpCpu;
+		setLogBacktrace(cpu, addr, log ? backtrace : 0);
 
 		runOnCpuThread([=] {
 			// Re-adding replaces: drop the old one so stale conditions don't linger.
@@ -1203,6 +1436,7 @@ namespace DebugServer
 		if (!CBreakPoints::IsAddressBreakPoint(c.bpCpu, addr, nullptr))
 			return c.fail("no breakpoint at that address");
 		const BreakPointCpu cpu = c.bpCpu;
+		setLogBacktrace(cpu, addr, 0);
 		runOnCpuThread([cpu, addr] { CBreakPoints::RemoveBreakPoint(cpu, addr); });
 		c.out.key("address").hex32(addr);
 		return true;
@@ -1412,6 +1646,10 @@ namespace DebugServer
 
 	static bool cmdClearBreakpoints(Context& c)
 	{
+		{
+			std::lock_guard lock(s_logMutex);
+			s_logBacktrace.clear();
+		}
 		runOnCpuThread([] {
 			CBreakPoints::ClearAllBreakPoints();
 			CBreakPoints::ClearAllMemChecks();
@@ -2059,6 +2297,7 @@ namespace DebugServer
 		{"find_memory", cmdFindMemory, false},
 		{"disassemble", cmdDisassemble, false},
 		{"evaluate", cmdEvaluate, false},
+		{"assemble", cmdAssemble, true},
 		{"analyze", cmdAnalyze, true},
 		{"lookup_symbol", cmdLookupSymbol, false},
 		{"list_functions", cmdListFunctions, false},
@@ -2066,6 +2305,7 @@ namespace DebugServer
 		{"remove_breakpoint", cmdRemoveBreakpoint, true},
 		{"enable_breakpoint", cmdEnableBreakpoint, true},
 		{"list_breakpoints", cmdListBreakpoints, false},
+		{"get_log", cmdGetLog, false},
 		{"set_memcheck", cmdSetMemcheck, true},
 		{"remove_memcheck", cmdRemoveMemcheck, true},
 		{"enable_memcheck", cmdEnableMemcheck, true},
@@ -2272,6 +2512,11 @@ namespace DebugServer
 	}
 
 	static std::thread s_serverThread;
+
+	void OnInstrumentationLog(bool iop, std::string_view message)
+	{
+		recordLog(iop, message);
+	}
 
 	void Start(int port)
 	{

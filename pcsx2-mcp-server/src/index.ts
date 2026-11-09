@@ -35,12 +35,14 @@ const server = new McpServer(
   {
     instructions: [
       'Debug PlayStation 2 games running in PCSX2.',
-      'Address parameters accept numbers or PCSX2 expressions: bare numbers are HEX ("1000e0" = 0x1000e0),',
+      'Address parameters are PCSX2 expression strings: bare numbers are HEX ("1000e0" = 0x1000e0),',
       'and registers, symbols and arithmetic work ("a0+10", "sp", "main", "[gp-0x7ff0]" dereferences).',
       'Stepping, register writes and run_to need the VM paused: use pcsx2_pause first.',
       'pcsx2_continue with wait=true (or pcsx2_wait) blocks until a breakpoint/watchpoint fires and reports which one.',
       'Most tools target the EE (main CPU); pass cpu="iop" for the I/O processor.',
       'Drive the game with pcsx2_input and look at it with pcsx2_screenshot.',
+      'Breakpoints with action="log" record hits (optionally with callers) for pcsx2_get_log without pausing.',
+      'Encode code-cave instructions with pcsx2_assemble rather than by hand.',
     ].join(' '),
   },
 );
@@ -63,7 +65,10 @@ function tool<S extends z.ZodRawShape>(
   }) as any);
 }
 
-const addr = () => z.union([z.string(), z.number()]).describe('Address: number, or expression string (hex by default, e.g. "1000e0", "a0+10", "main")');
+// JSON numbers can only be written in decimal, so the schema asks for strings; a number that
+// arrives anyway is read as hex digits like a bare number in an expression ("139424" = 0x139424).
+const addr = () => z.preprocess(v => (typeof v === 'number' ? v.toString() : v), z.string())
+  .describe('Address expression string, hex by default: "1000e0", "0x1000e0", "a0+10", "main"');
 const cpuArg = () => z.enum(['ee', 'iop']).default('ee').describe('Target CPU');
 const hex32 = (n: number) => '0x' + (n >>> 0).toString(16).padStart(8, '0');
 
@@ -417,6 +422,27 @@ tool('pcsx2_evaluate', 'Evaluate a PCSX2 debugger expression: registers, symbols
   },
 );
 
+tool('pcsx2_assemble',
+  'Assemble MIPS instructions with PCSX2\'s assembler, for code caves and patches. Immediates and jump/branch targets are '
+  + 'expressions (hex by default), and are encoded for the given address. Shows the disassembly of each encoding as a check, '
+  + 'and pnach lines. With write=true the code is also written to memory.',
+  {
+    address: addr().describe('Address of the first instruction'),
+    code: z.string().describe('One instruction per line or separated by ";", e.g. "lui v0,0x3f00; j 0x1681ac; nop". "//" starts a comment.'),
+    write: z.boolean().default(false),
+    cpu: cpuArg(),
+  },
+  async ({ address, code, write, cpu }) => {
+    const r = await dbg.call<{ instructions: Array<{ address: string; opcode: string; source: string; disasm?: string }> }>(
+      'assemble', { address, code, write, cpu });
+    const width = Math.max(...r.instructions.map(i => i.source.length));
+    const listing = r.instructions.map(i => `${i.address}  ${i.opcode.slice(2)}  ${i.source.padEnd(width)}${i.disasm ? `   ; ${i.disasm}` : ''}`);
+    const pnach = r.instructions.map(i =>
+      `patch=1,${cpu === 'iop' ? 'IOP' : 'EE'},${i.address.slice(2).toUpperCase()},word,${i.opcode.slice(2).toUpperCase()}`);
+    return `${write ? 'Wrote' : 'Assembled'} ${r.instructions.length} instruction(s):\n${listing.join('\n')}\n\n${pnach.join('\n')}`;
+  },
+);
+
 tool('pcsx2_lookup_symbol', 'Find a symbol by name, or the symbol containing an address. Symbols come from the ELF, .sym files and PCSX2\'s analysis.',
   { name: z.string().optional(), address: addr().optional(), cpu: cpuArg() },
   async ({ name, address, cpu }) => {
@@ -457,7 +483,7 @@ tool('pcsx2_list_functions', 'List known functions, optionally filtered by name 
 // ==========================================================
 
 const actionArg = () => z.enum(['break', 'log', 'both']).default('break')
-  .describe('break = pause; log = count hits and log to the PCSX2 console without pausing; both = log and pause');
+  .describe('break = pause; log = record hits without pausing (read them with pcsx2_get_log); both = record and pause');
 
 tool('pcsx2_set_breakpoint', 'Set (or replace) an execution breakpoint, optionally conditional.',
   {
@@ -465,14 +491,15 @@ tool('pcsx2_set_breakpoint', 'Set (or replace) an execution breakpoint, optional
     condition: z.string().optional().describe('Only break when this expression is non-zero, e.g. "a0 == 3" (hex numbers)'),
     action: actionArg(),
     log_format: z.string().optional().describe('For log/both, e.g. "a0={a0} [a1]={[a1]}"'),
+    backtrace: z.number().int().min(0).max(32).default(0).describe('For log/both: also record this many callers (return addresses) per hit'),
     max_hits: z.number().int().min(0).default(0).describe('Disable after this many hits (0 = never)'),
     description: z.string().optional(),
     enabled: z.boolean().default(true),
     cpu: cpuArg(),
   },
-  async ({ address, condition, action, log_format, max_hits, description, enabled, cpu }) => {
+  async ({ address, condition, action, log_format, backtrace, max_hits, description, enabled, cpu }) => {
     const r = await dbg.call<{ address: string; function?: string }>('set_breakpoint',
-      { address, condition, action, log_format, max_hits, description, enabled, cpu });
+      { address, condition, action, log_format, backtrace, max_hits, description, enabled, cpu });
     return `Breakpoint at ${r.address}${r.function ? ` <${r.function}>` : ''}${condition ? ` if ${condition}` : ''}${action !== 'break' ? ` (${action})` : ''}`;
   },
 );
@@ -545,6 +572,36 @@ tool('pcsx2_list_breakpoints', 'List breakpoints and watchpoints (both CPUs) wit
         + (w.action ? ` (${w.action})` : '') + (w.description ? ` — ${w.description}` : ''));
     }
     return lines.length ? lines.join('\n') : 'No breakpoints or watchpoints.';
+  },
+);
+
+interface LogLocation { pc: string; function?: string; function_offset?: number }
+interface LogEntry { count?: number; cpu: Cpu; location: LogLocation; message: string; callers?: LogLocation[] }
+
+const logWhere = (l: LogLocation) =>
+  l.pc + (l.function ? ` <${l.function}${l.function_offset ? `+0x${l.function_offset.toString(16)}` : ''}>` : '');
+
+tool('pcsx2_get_log',
+  'Read the hits recorded by breakpoints and watchpoints with action log/both: the log_format message, and the callers '
+  + 'if the breakpoint has "backtrace". summarize groups identical hits with counts, e.g. to see which callers run a function '
+  + 'and how often: set a log breakpoint with backtrace, let the game run, then summarize.',
+  {
+    summarize: z.boolean().default(true).describe('Group identical hits (same PC, message and callers), most frequent first'),
+    clear: z.boolean().default(true).describe('Empty the log afterwards'),
+    max: z.number().int().min(0).max(5000).default(100).describe('Entries or groups to show'),
+  },
+  async ({ summarize, clear, max }) => {
+    const r = await dbg.call<{ total: number; dropped: number; distinct?: number; groups?: LogEntry[]; entries?: LogEntry[] }>(
+      'get_log', { summarize, clear, max }, 60000);
+    const list = (summarize ? r.groups : r.entries) ?? [];
+    const lines = list.map(e =>
+      `${summarize ? `${String(e.count).padStart(6)}× ` : ''}${e.cpu.toUpperCase()} ${logWhere(e.location)}  ${e.message}`
+      + (e.callers ?? []).map(c => `\n${summarize ? '        ' : ''}    ← ${logWhere(c)}`).join(''));
+    const available = summarize ? r.distinct! : r.total;
+    const header = `${r.total} hit(s)${summarize ? `, ${r.distinct} distinct` : ''}`
+      + (available > list.length ? ` (showing ${list.length})` : '')
+      + (r.dropped ? `; ${r.dropped} older hit(s) were dropped` : '') + (clear ? '; log cleared' : '');
+    return lines.length ? `${header}:\n${lines.join('\n')}` : `${header}.`;
   },
 );
 

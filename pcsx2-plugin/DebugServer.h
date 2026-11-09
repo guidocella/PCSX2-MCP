@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <string_view>
+
 namespace DebugServer
 {
 	// Start the debug server on 127.0.0.1:port (the PCSX2_DEBUG_SERVER_PORT
@@ -17,4 +19,8 @@ namespace DebugServer
 	void Stop();
 
 	bool IsRunning();
+
+	// Records a hit of a breakpoint or watchpoint with logging enabled, for
+	// the get_log command. Call from LogInstrumentation() in Breakpoints.cpp.
+	void OnInstrumentationLog(bool iop, std::string_view message);
 } // namespace DebugServer

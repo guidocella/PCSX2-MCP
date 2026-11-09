@@ -67,9 +67,19 @@ const addr = () => z.union([z.string(), z.number()]).describe('Address: number, 
 const cpuArg = () => z.enum(['ee', 'iop']).default('ee').describe('Target CPU');
 const hex32 = (n: number) => '0x' + (n >>> 0).toString(16).padStart(8, '0');
 
+// The plugin caps read_memory at 1MB per call, so larger reads are chunked.
+const MAX_READ = 1024 * 1024;
+
 async function readMem(a: string | number, length: number, cpu: Cpu = 'ee'): Promise<{ addr: number; data: Buffer }> {
-  const r = await dbg.call<{ address: string; hex: string }>('read_memory', { address: a, length, cpu }, 60000);
-  return { addr: parseInt(r.address, 16), data: Buffer.from(r.hex, 'hex') };
+  const chunks: Buffer[] = [];
+  let addr: number | undefined;
+  for (let off = 0; off < length; off += MAX_READ) {
+    const r = await dbg.call<{ address: string; hex: string }>('read_memory',
+      { address: addr === undefined ? a : addr + off, length: Math.min(MAX_READ, length - off), cpu }, 60000);
+    if (addr === undefined) addr = parseInt(r.address, 16);
+    chunks.push(Buffer.from(r.hex, 'hex'));
+  }
+  return { addr: addr!, data: Buffer.concat(chunks) };
 }
 
 async function writeMem(a: string | number, data: Buffer, cpu: Cpu = 'ee'): Promise<number> {

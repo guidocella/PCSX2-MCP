@@ -2346,7 +2346,9 @@ namespace DebugServer
 		u32 patches = 0;
 		u32 gamedb_patches = 0;
 		runOnCpuThread([&] {
-			VMManager::ReloadPatches(true, false, true, true);
+			// Re-read the game settings ini too, since it holds the list of enabled cheats.
+			VMManager::ReloadGameSettings();
+			VMManager::ReloadPatches(true, true, true, true);
 			cheats = Patch::GetActiveCheatsCount();
 			patches = Patch::GetActivePatchesCount();
 			gamedb_patches = Patch::GetActiveGameDBPatchesCount();

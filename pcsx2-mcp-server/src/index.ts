@@ -55,7 +55,8 @@ function tool<S extends z.ZodRawShape>(
   shape: S,
   run: (args: z.infer<z.ZodObject<S>>) => Promise<string | ToolResult>,
 ): void {
-  server.registerTool(name, { description, inputSchema: shape }, (async (args: z.infer<z.ZodObject<S>>) => {
+  // Strict, so a misspelled or made-up parameter is an error instead of being silently dropped.
+  server.registerTool(name, { description, inputSchema: z.strictObject(shape) }, (async (args: z.infer<z.ZodObject<S>>) => {
     try {
       const r = await run(args);
       return typeof r === 'string' ? text(r) : r;
@@ -223,12 +224,12 @@ tool('pcsx2_read_memory', 'Read memory. Formats: hexdump, hex, or typed values (
   },
 );
 
-tool('pcsx2_write_memory', 'Write memory: either raw hex bytes ("data") or a typed value ("value" + "type").',
+tool('pcsx2_write_memory', 'Write memory: either raw hex bytes ("data") or typed values ("value" + "type").',
   {
     address: addr(),
     data: z.string().optional().describe('Hex bytes in memory order, e.g. "00 00 80 3f"'),
-    value: z.string().optional().describe('Value to encode, e.g. "100", "0x3f800000", "1.5"'),
-    type: z.enum(['u8', 's8', 'u16', 's16', 'u32', 's32', 'u64', 'f32', 'f64']).optional().describe('Type of "value"'),
+    value: z.string().optional().describe('Values to encode, separated by spaces or commas, e.g. "100", "0x3f800000 0x00000000", "1.5"'),
+    type: z.enum(['u8', 's8', 'u16', 's16', 'u32', 's32', 'u64', 'f32', 'f64']).optional().describe('Type of each value in "value"'),
     cpu: cpuArg(),
   },
   async ({ address, data, value, type, cpu }) => {
@@ -238,7 +239,7 @@ tool('pcsx2_write_memory', 'Write memory: either raw hex bytes ("data") or a typ
       if (!/^([0-9a-f]{2})+$/i.test(clean)) throw new Error('"data" must be an even number of hex digits');
       buf = Buffer.from(clean, 'hex');
     } else if (value !== undefined && type) {
-      buf = encodeValue(value, type);
+      buf = Buffer.concat(value.split(/[\s,]+/).filter(Boolean).map(v => encodeValue(v, type)));
     } else {
       throw new Error('pass "data", or "value" together with "type"');
     }

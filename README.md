@@ -31,12 +31,12 @@ The full PCSX2 source is not included; see [Building](#building).
 Addresses are **PCSX2 debugger expression** strings: bare numbers are hex (`1000e0`), and registers, symbols,
 arithmetic and dereferences work (`a0+10`, `sp`, `main`, `[gp-7ff0]`). A JSON number is read as hex digits too, since
 JSON can't write hex.
-Most tools take `cpu: "ee" | "iop"` (default EE).
+Most tools take `cpu: "ee" | "iop"` (default EE). Unknown parameters are rejected rather than ignored.
 
 | Area | Tools |
 |---|---|
 | Status | `pcsx2_status` — running/paused, PCs, game title/serial/CRCs; connects automatically |
-| Memory | `pcsx2_read_memory` (hexdump or typed u8…f64), `pcsx2_write_memory` (hex bytes or a typed value), `pcsx2_read_string` (ASCII/UTF-8/Shift-JIS), `pcsx2_find_pattern` (bytes with `??` wildcards, or a typed value) |
+| Memory | `pcsx2_read_memory` (hexdump or typed u8…f64), `pcsx2_write_memory` (hex bytes, or typed values such as a list of u32 words), `pcsx2_read_string` (ASCII/UTF-8/Shift-JIS), `pcsx2_find_pattern` (bytes with `??` wildcards, or a typed value) |
 | Value hunting | `pcsx2_memory_snapshot` + `pcsx2_memory_diff` — cheat-search style narrowing with changed/unchanged/increased/decreased/equals filters |
 | Registers | `pcsx2_read_registers` (GPR, CP0, FPR, FCR, VU0F, VU0I, GSPRIV or all), `pcsx2_write_register` (by name), `pcsx2_set_pc` |
 | Code | `pcsx2_disassemble` (marks PC, breakpoints and function labels), `pcsx2_assemble` (PCSX2's assembler; prints pnach lines, optionally writes), `pcsx2_evaluate`, `pcsx2_lookup_symbol`, `pcsx2_list_functions`, `pcsx2_analyze` |

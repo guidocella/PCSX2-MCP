@@ -192,6 +192,8 @@ connection are answered in order. Address-like fields take a number or an expres
 | `the VM must be paused` | Stepping, `run_to`, register writes and frame advance need `pcsx2_pause` first. |
 | No function names | Symbols come from the ELF and PCSX2's function scan; run `pcsx2_analyze`, and check *Settings → Debug → Analysis*. |
 | Input has no effect | Port must have a DualShock 2 configured; holding the same input on a real controller overrides it. |
+| Game hangs after `load_state` | The savestate restored RAM from before code written by `pcsx2_assemble`/`pcsx2_write_memory`, so a hook can jump into a code cave that is now empty. Rewrite the cave after loading, or put the code in a pnach and `pcsx2_reload_cheats` (continuous lines are reapplied every frame). |
+| Original code still runs patched after disabling a cheat | Savestates keep patched RAM, so unloading a pnach doesn't restore the original instructions; write them back by hand. |
 
 ---
 

@@ -1156,7 +1156,9 @@ namespace DebugServer
 		char buf[64];
 		if (static_cast<s32>(v) >= -0x8000 && static_cast<s32>(v) < 0x8000)
 		{
-			std::snprintf(buf, sizeof(buf), "addiu %s,zero,%d", reg.c_str(), static_cast<s32>(v));
+			// The assembler reads bare numbers as hex, so print hex
+			const s32 s = static_cast<s32>(v);
+			std::snprintf(buf, sizeof(buf), "addiu %s,zero,%s0x%x", reg.c_str(), s < 0 ? "-" : "", s < 0 ? -s : s);
 			out.push_back(buf);
 		}
 		else if (v <= 0xffff)

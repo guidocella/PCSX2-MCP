@@ -592,10 +592,14 @@ namespace DebugServer
 		std::vector<std::pair<HitKey, u32>> hits;
 		for (const BreakPointCpu cpu : DEBUG_CPUS)
 		{
+			// Skip log-only ones (continueOnHit): they never pause the VM, so their hits
+			// would be misreported as the reason for a stop with another cause.
 			for (const BreakPoint& bp : CBreakPoints::GetBreakpoints(cpu, false))
-				hits.push_back({{cpu, false, bp.addr, bp.addr}, bp.totalHits});
+				if (!bp.continueOnHit)
+					hits.push_back({{cpu, false, bp.addr, bp.addr}, bp.totalHits});
 			for (const MemCheck& mc : CBreakPoints::GetMemChecks(cpu))
-				hits.push_back({{cpu, true, mc.start, mc.end}, mc.totalHits});
+				if (!mc.continueOnHit)
+					hits.push_back({{cpu, true, mc.start, mc.end}, mc.totalHits});
 		}
 		return hits;
 	}

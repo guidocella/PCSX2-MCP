@@ -134,7 +134,12 @@ Patch PCSX2 with the DebugServer:
    ```
    The `:f`/`:d`/`:u` suffixes for log format expressions (e.g. `{f12:f}`) are a further change to
    `EvaluateInstrumentationLogFormat()` and `ValidateInstrumentationLogFormat()` there; without it, every value prints in hex.
-5. Build PCSX2 as usual (see PCSX2's build documentation for your platform).
+   Make `ValidateInstrumentationLogFormat()` only compile each expression (`initExpression()`), not evaluate it: otherwise
+   a format like `{[a0+4]}` is rejected whenever `a0` doesn't hold a valid pointer at the moment the breakpoint is set.
+5. Optionally, in `pcsx2-qt/QtHost.cpp`, `#include "pcsx2/DebugTools/DebugServer.h"` and add `&& !DebugServer::HasClients()`
+   to the condition in `EmuThread::onApplicationStateChanged()` that pauses on focus loss, so "Pause On Focus Loss" doesn't
+   pause the game while the MCP server is connected (you're in another window driving it).
+6. Build PCSX2 as usual (see PCSX2's build documentation for your platform).
 
 On startup PCSX2 logs `[DebugServer] Listening on 127.0.0.1:21512`. Set `PCSX2_DEBUG_SERVER_PORT` to use another port
 (and `PCSX2_DEBUG_PORT` for the MCP server to match). The server only listens on localhost.

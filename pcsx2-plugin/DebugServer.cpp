@@ -57,6 +57,7 @@ typedef int socket_t;
 #include "Host.h"
 #include "MTGS.h"
 #include "Patch.h"
+#include "R5900.h"
 #include "VMManager.h"
 #include "SIO/Pad/Pad.h"
 #include "SIO/Pad/PadDualshock2.h"
@@ -754,7 +755,7 @@ namespace DebugServer
 		c.out.key("paused").boolean(c.cpu->isCpuPaused());
 		c.out.key("ee_pc").hex32(r5900Debug.getPC());
 		c.out.key("iop_pc").hex32(r3000Debug.getPC());
-		c.out.key("ee_cycles").unum(r5900Debug.getCycles());
+		c.out.key("ee_cycles").unum(cpuRegs.cycle); // getCycles() truncates to 32 bits, which wrap every ~15 s
 		c.out.key("title").str(VMManager::GetTitle(true));
 		c.out.key("serial").str(VMManager::GetDiscSerial());
 		c.out.key("disc_version").str(VMManager::GetDiscVersion());
@@ -2640,6 +2641,12 @@ namespace DebugServer
 	bool IsRunning()
 	{
 		return s_running.load();
+	}
+
+	bool HasClients()
+	{
+		std::lock_guard lock(s_clientsMutex);
+		return !s_clients.empty();
 	}
 
 } // namespace DebugServer

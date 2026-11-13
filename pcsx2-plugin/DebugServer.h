@@ -20,6 +20,10 @@ namespace DebugServer
 
 	bool IsRunning();
 
+	// Whether a client (pcsx2-mcp-server) is connected. pcsx2-qt doesn't pause on focus loss while
+	// one is, since the debugger's user is in another window (patch in QtHost.cpp).
+	bool HasClients();
+
 	// Records a hit of a breakpoint or watchpoint with logging enabled, for
 	// the get_log command. Call from LogInstrumentation() in Breakpoints.cpp;
 	// address is the breakpoint's, or the start of the watchpoint's range.

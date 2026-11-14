@@ -198,6 +198,7 @@ connection are answered in order. Address-like fields take a number or an expres
 | No function names | Symbols come from the ELF and PCSX2's function scan; run `pcsx2_analyze`, and check *Settings → Debug → Analysis*. |
 | Input has no effect | Port must have a DualShock 2 configured; holding the same input on a real controller overrides it. |
 | Game hangs after `load_state` | The savestate restored RAM from before code written by `pcsx2_assemble`/`pcsx2_write_memory`, so a hook can jump into a code cave that is now empty. Rewrite the cave after loading, or put the code in a pnach and `pcsx2_reload_cheats` (continuous lines are reapplied every frame). |
+| A `pcsx2_write_memory`/`pcsx2_assemble` edit has no effect | An enabled pnach (cheat, or a patch such as the widescreen one) writes the same address with a continuous `patch=1` line, which is reapplied every vsync and overwrites the edit at the next frame. Edit the pnach and `pcsx2_reload_cheats` instead, or read the address back after a frame advance to check. |
 | Original code still runs patched after disabling a cheat | Savestates keep patched RAM, so unloading a pnach doesn't restore the original instructions; write them back by hand. |
 
 ---
